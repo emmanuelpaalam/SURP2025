@@ -1,0 +1,169 @@
+---
+title: "Complications with Criteria Column, AACT Database"
+author: "Emmanuel Paalam, Atiye Buker credited for some data ambiguity cases included here (and her sheet, which I link under Limitations!)"
+date: 06/05/2025
+format: html
+self-contained: true
+execute:
+  warning: FALSE
+  message: FALSE
+---
+
+## Summary
+
+The purpose of this document is to provide evidence for a need to adjust approaches (at least those similar to my own) to engineering variables using the `criteria` column of the `eligibilities` table in the AACT database. First I provide my approach to this process, discussing a step towards data sorting I have taken. I follow up with what I've learned about the column, with examples provided, that imply my current approach and the strategies it relies on are prone to inaccuracy.
+
+## Approach
+
+```{r, echo=FALSE}
+library(arrow)
+library(tidyverse)
+library(dplyr)
+raw_data <- read_parquet("/home/acohen/Research/PredictiveCT/PredictiveCT/Emmanuel/aact_checklistitems/parq_datasets/raw/filt_eligcriteria2025_05_13.parquet")
+```
+
+Column `eligibilities.criteria` [from the AACT database](https://aact.ctti-clinicaltrials.org/data_dictionary) contains the originally-written criteria for each study. Based on this column, we want engineered variables which quantify the inclusion and exclusion criteria per study. Current approaches to this task across the team commonly utilize regex- or vocabulary-based detection of inclusion and exclusion criterion.
+
+Here, I provide a simplified version of an R script I've used as an intial first step here. My script attempts to flag column entries in a mutated variable based on what keywords exist in a `criteria` entry, with normalization (editing/adding to language found by eye to suggest in-/ex-clusion listings exist) of entries conducted before this as an attempt to accurately maximize flagging based on context while *continuing* to rely on *phrase-based searching*.
+
+```{r}
+#| code-fold: true
+#Step 1: normalize criteria content
+corrections <- c(
+  "inclusion:" = "inclusion criteria",
+  "exclusion:" = "exclusion criteria",
+  "exculsion" = "exclusion",
+  "exclsuion" = "exclusion",
+  "exclsuion criteria" = "exclusion criteria",
+  "exclusion critera" = "exclusion criteria",
+  "critera" = "criteria",
+  "inclusioin" = "inclusion",
+  "inclusions" = "inclusion",
+  "iinclusion" = "inclusion",
+  "inclusion for" = "inclusion criteria for",
+  "for inclusion" = "for inclusion criteria",
+  "eligiblity" = "eligibility",
+  "eligibity" = "eligibility",
+  "eligibilty" = "eligibility",
+  "ineligiblity" = "ineligibility",
+  "critera" = "criteria",
+  "requirments" = "requirements",
+  "inclusion criterion" = "inclusion criteria",
+  "exclusion criterion" = "exclusion criteria",
+  "inclusion/exclusion criteria" = "inclusion criteria exclusion criteria",
+  "inclusion and exclusion" = "inclusion criteria exclusion criteria",
+  "inclusioncriteria" = "inclusion criteria",
+  "inclusionary criteria" = "inclusion criteria",
+  "to be eligible" = "to be eligible eligibility criteria",
+  "key criteria" = "key inclusion criteria"
+)
+
+normalize_criteria <- function(text){
+  
+  text_cleaned <- text %>%
+    filter(!is.na(criteria)) %>%
+    mutate(
+      criteria_cleaned = criteria %>%
+        str_to_lower %>%
+        str_trim() %>%
+        str_replace_all(corrections) %>%
+        str_replace_all(regex("(?<=\\b)(inclusion|exclusion)\\s*\\n", ignore_case = TRUE), "\\1 criteria\n") %>%
+        str_replace_all("criteria criteria", "criteria")
+    )
+  
+  return(text_cleaned)
+}
+
+#Step 2: Detect and label inclusion/exclusion markers
+
+incl_keys = "(?<=\\b)(inclusion|eligibility|eligible)"
+excl_keys = "(?<=\\b)(exclusion|ineligibility|ineligible)"
+
+anchor_criteria <- function(df){
+
+  df <- df %>% mutate(
+    anchor_flag = case_when(
+      str_detect(criteria_cleaned, regex(incl_keys, ignore_case = TRUE)) & str_detect(criteria_cleaned, regex(excl_keys, ignore_case = TRUE)) ~ "both",
+      str_detect(criteria_cleaned, regex(incl_keys, ignore_case = TRUE)) ~ "inclusion_only",
+      str_detect(criteria_cleaned, regex(excl_keys, ignore_case = TRUE)) ~ "exclusion_only",
+      TRUE ~ "none"
+    )
+  )
+
+  return(df)
+}
+
+split_criteria <- function(df) {
+  parsable = df %>% filter(anchor_flag != "none")
+  ambiguous = df %>% filter(anchor_flag == "none")
+  
+  list(parsable_data = parsable, ambiguous_data = ambiguous)
+}
+
+# Step 4: Call on defined functions to filter data
+```
+
+Previous run-throughs with this same process saw different `correction` lists, different `incl_keys` and `excl_keys` used to determine the value of `anchor_flag` per row, and different means of flagging (step 2), such as the utilization of the `stringdist` library in order to account for misspellings by automation rather than manual entry or regex.
+
+This script, again, doesn't handle the task of establishing the needed engineered variables from the `criteria` column, but I was drawn to this "shallow-end dip" primarily to observe early on how effective using language for indication is. While I did exploit `anchor_flag` in order to generate previously requested distinctions between "parsable" and "ambiguous" criteria entries, this "demo" workflow allowed me to see how effective doing this to ultimately "parse and count" would really be. This was further motivated by my understanding that feature engineering must occur regularly as this project is launched as a service and will likely work best if automatable.
+
+## Beforehand
+
+At the time this document was written, I'd run my code a couple times to obtain Excel sheets of what `eligibilities.criteria` entries I could distinguish parsable for engineering versus what was too ambiguous at a first glance. An overview of both sheets offers some ideas about the data we're working with:
+
+1.  Commonly, entries will fortunately engage with standard language for distinguishing in writing between "inclusion" and "exclusion criteria"; this is, in fact, where the `corrections` list in my code came from, as I'd continuously find (not only with keyword-specific flagging but also with regex or `stringdist`) variations of "inclusion" and "exclusion" *acting as listing headers* to attend to in normalization.
+
+2.  Most of the data marked as "too ambiguous" to parse simply used language we hadn't yet verified as a team as viable for criteria counting. This most often includes entries that use the terms "disease characteristics" and "patient characteristics" as headers for criteria listings, rather than the language mentioned before. It wouldn't take major readjustments to account for this added variation in language.
+
+With this in mind, regex or phrase-centric searching can work well as a basis for splitting a decent number of entries, and the complexity of this variation, while daunting, isn't in itself my concern with this approach.
+
+## Limitations
+
+While regex- or phrase-based identification of list headers is straightforward to implement, it is increasingly challenged by the diversity of formatting in the AACT criteria field. With the continuous exploration of new approaches to my workflow, I've observed substantial variation in phrasing, structure, and section labeling across studies, such as contradictory or inconsistent usage across studies of certain terms that would otherwise be ideal for flagging and marking listings.
+
+The table below presents representative cases, illustrating how ambiguous phrasing, missing or partial section headers, inline sentence labeling, and inconsistent keyword use lead to errors in section classification and criteria counting.
+
+### Evidence of Current Method Limitations
+
+| Issue Type | NCT ID | Excerpt |
+|-------------------|-------------------|----------------------------------|
+| Keyword Collisions - "exclusion therapy", not "exclusion criteria", used | NCT00121212 | "**Exclusion Therapy**: \* Not a candidate for treatment..." |
+| Keyword Collision - "key criteria" inside exclusion criteria | NCT03629080 | "Exclusion Criteria: Patients who meet any of the following **key criteria** will be excluded..." |
+| Keyword Collision - "key criteria" inside inclusion criteria | NCT03363841 | "Inclusion Criteria: \* Subject must fulfill the following **KEY criteria** to be eligible..." |
+| Keyword Collision - "key criteria" as header with "inclusion" and "exclusion" present | NCT03301597 | "**Key Criteria**: Inclusion Criteria: \* Age ≥ 18..." |
+| Keyword Collision - "key criteria" as header with "inclusion" and "exclusion" absent | NCT03866577 | "Key Criteria for Healthy Volunteers", "Key Criteria for Immune Thrombocytopenic Purpura (ITP) Patients" |
+| No Section Headers | NCT02887521 | "1. Patient is scheduled to undergo NSCLC resection ... 4. Age ≥ 18 yrs" |
+| No Section Headers | NCT01985828 | "\* Patient must be ≥ 18 years of age. \* Histologically proven prostate adenocarcinoma \* Gleason score 2-10 (reviewed by reference lab) \* Biopsy within one year of date of registration \* Clinical stage T1b-T4, N0-Nx, M0-Mx (AJCC 7th Edition) \* T-stage ..." |
+| No Section Headers | NCT00898833 | "\* Registration to CALGB 9480 or 9583 \* Samples collected and shipped appropriately \* Institutional Review Board (IRB) review and approval at the institution where the laboratory work will be performed is required..." |
+| No Section Headers | NCT02345031 | "\* American-English speaking \* Have difficulty hearing speech in a noisy environment \* No recent history of middle ear disease...While you are in the study, you must: \* Follow the instructions you are given \* Come to the study centre for all visits with the study doctor or study staff..." |
+| Partial Section Labeling | NCT02037620 | "1. non-progressive SCI with complete motor paralysis above T1...Exclusion Criteria: 1. ventilator dependent..." |
+| Partial Section Labeling | NCT02318550 | "1. Patient has a non-MRI conditional permanently...Exclusion Criteria: 1. Non-device related contraindication for MRI" |
+| Partial Section Labeling | NCT03831503 | "1. Age 18-60 years...Exclusion Criteria: 1. Administration of an investigational compound" |
+| Ambiguous Use of 'criteria' - multiple mentions | NCT02595489 | "criteria for enrollment to screening ", "criteria for assignment to drug", "exclusion criteria" |
+| Ambiguous Use of 'criteria' - mention with general connotation | NCT01125046, NCT00823732 | "Criteria", followed by undifferentiated list of criterion |
+| Ambiguous Use of 'criteria' - multiple mentions for specific criteria type | NCT02067858 | "MAJOR CRITERIA", "MINOR CRITERIA"; both keywords followed by what appears to be inclusion criteria |
+| Ambiguous Use of 'criteria' - multiple mentions in the same section | NCT00342771 | "ELIGIBILITY CRITERIA", "CRITERIA (ALL MUST BE CHECKED)", "ELIGIBILITY CHECK LIST - POPULATION-BASED CONTROLS CRITERIA (ALL MUST BE CHECKED)" |
+| Ambiguous Use of 'criteria' - keyword followed by uniquely formatted criterion (no "inclusion"/"exclusion") | NCT01625260 | "ENTRY CRITERIA: DISEASE CHARATERISTICS..." |
+| Ambiguous Use of 'criteria' - multiple mentions, lists are mixed bag of in-/ex-clusions | NCT03901092 | "Scan Reader Criteria (5 total)", "Scan Criteria" |
+| Ambiguous Use of 'criteria' - multiple mentions, ONLY for inclusive criteria here | NCT03901105 | "Scan Reader Criteria (5 total readers)", "Scan Criteria (205 total scans)" |
+| Inline 'excluded' in header-sentence, necessitating use of keyword as indicator for exclusion criteria for this entry | NCT02954510 | "Both female and male participants are being studied...Patients will be **excluded** with an eGFR \>30ml/min/1.73 meters squared." |
+| Sentence-based Labeling w/"exclude" - another example of derivation from 'exclusion criteria' as header, and sentence-as-header | NCT04919668 | "The investigators will **exclude** from the analysis..." |
+| Inline 'excluded' in non-header sentence | NCT00114140 | "No prior radiotherapy to the head and neck unless head and neck radiotherapy clearly **excluded** the brain" |
+| Inline 'excluded' in bullets, not header | NCT00334516 | "Cognitive impairment of such severity...If they are unable to answer these questions, they will be **excluded** from the study." |
+| Inline 'excluded' where no exclusion criteria exists | NCT02770001 | "\* All the genotype data will be used and no individual will be **excluded** based on any phenotype...." |
+
+I argue that there are at least two key issues with the `criteria` column that hinder or prevent a fully or easily automatable "parse-and-count" process based primarily on words or phrases:
+
+1.  *Inconsistent Use of Keywords Across Rows*: the keyword 'criteria' being the primary example of this, connotative or contextual meanings of keywords can differ per study. For that reason, setting a keyword to indicate the occurrence of inclusion or exclusion will lead some entries to be accurately parsed at the expense of others—keywords' meanings as headers appear inconsistent. Conversely, generalizing keywords (e.g. treating "criteria" as neutral or using less specific phrasing) merely shifts the manual work needed to a different stage: we would then need a context-focused process to determine *per study* when occurrences of such terms actually signal at least inclusion or exclusion.
+
+2.  *Incomplete Formatting*: examples like NCT02887521 or NCT03831503 demonstrate that, due to the lack of enforced formatting for criteria documentation, criteria listings aren't consistently labelled. There are entries which lack some or all headers for lists of criterieon, challenging how we can rely on keywords and language to act as list separators/markers without manual examination. And in general, criteria entires which lack cleanly marked lists exist too (e.g. NCT01177579, NCT02954510), although this admittedly may be easier to repair in normalization.
+
+Given the lack of an enforced or required structure for criteria design documentation (at least in regards to what is uploaded to the AACT database), I expect these variations to increase as the database expands.
+
+See Atiye's compilation of [unusual entries](https://docs.google.com/spreadsheets/d/1MUMiswRfpzAlJw-qQkKIc-HSj-Xy6gpjDITmPEBKz64/edit?usp=sharing) for an accessible sheet of more examples of hard-to-treat formatting.
+
+## Overall Idea
+
+Utilizing regular expressions and other kinds of "phrase-based" methods for finding indications of inclusion and exclusion criteria listings can work for entries that follow similar formatting patterns, but this document ideally should have raised awareness that entries with information we want to account for that simultaneously *don't* subscribe to common patterns in the column exist as well. Furthermore, entries that use the same keywords in different ways also pose a problem for convenient phrase-based parsing.
+
+If we are to stick with a regex- or vocab-based search method as a primary method for search, I can see this requiring intensive design of parsing rules, most of which will need to be updated or reviewed continuously as the database updates and criteria entries are added or changed. As the product of this project is intended to be automatized to some degree, I don't see this level of attention being dedicated for engineering two numerical variables as ideal, even as part of continuous review of what our service is doing on the back-end post-deployment.
