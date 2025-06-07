@@ -1,6 +1,6 @@
 # "Improving Clinical Trial Design via a Statistical Machine Learning-Based Interface" Artifacts and Reports
 
-This repository serves as a version-controlled backup and public showcase of outputs from my ongoing research project using the AACT clinical trials database.
+This repository serves as a version-controlled backup and public showcase of outputs from my summer 2025 research project conducted at The University of West Florida.
 
 Contents may include:
 
